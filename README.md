@@ -1,37 +1,21 @@
-# Isaac FPS controls & performance patch
+# Isaac FPS Performance
 
-Private review package for the author of Isaac FPS Mod, based on **0.5.132**.
-This is a patch to an existing mod, not a standalone replacement mod.
+Rendering optimizations and optional native High FPS for **Isaac FPS Mod 0.5.132**. Controls are maintained separately in [isaac-fps-controls](https://github.com/bishoptype/isaac-fps-controls).
 
-## Quick test (English)
+## Changes
 
-1. Close Isaac and back up the six matching Lua files in your mod directory.
-2. For the original **0.5.132** base only, copy the six `.lua` files from this repository into that directory.
-3. Launch through REPENTOGON and continue normally. Do not delete your saves.
-4. For a newer or locally modified version, review and merge `controls-performance.patch` instead of overwriting complete files. With Git, first run `git apply --check controls-performance.patch`, then `git apply controls-performance.patch`.
-5. Restore your backed-up six files to undo the Lua changes.
+- Reuse bounded per-room pit faces, vertices and clipping scratch buffers, invalidating derived geometry/projection caches when needed.
+- Cache up to 128 heart-style draw recipes and merge adjacent identical-color rectangles.
+- Suppress duplicate native top-down NPC/bomb draws while the existing opaque FPS-view flag is active; entity logic, collision and damage remain. Native rendering returns outside that flag, including transitions/intros.
 
-All other original mod files and assets are still required. The existing sensitivity in a save is preserved; set it to **0.40 degrees per render pixel** if you want the same setting used in the local comparison.
+## Files and validation
 
-## Included controls
+`main.lua`, `fps_holes.lua`, `fps_health.lua` are ready-to-test replacements for the exact base. `performance.patch` contains only these performance changes. **No mouse, firing, recoil or gun-aim changes are included.**
 
-- Mouse-look uses window cursor coordinates, projects cursor and origin in the same camera snapshot, then subtracts the origin and render midpoint.
-- Centered tolerance reduced from 1 to 0.15 render pixels; one discarded centered sample replaces the 150ms + 3-sample startup wait.
-- Default sensitivity 0.40 degrees/pixel; ADS sensitivity and pitch limits remain.
-- F6 and the upper/forward thumb mouse button (Mouse5) toggle FPS mode, once per press.
-- Hold LMB to repeat at the existing weapon cooldown; reload, ammo and charge/release behavior remain.
-- Shooting/explosion camera shake and gun camera recoil removed; gun model animation remains.
-- Gun rounds follow the aim pitch without the extra native falling-speed offset; native lobbed tears retain their fall behavior.
-
-## Included rendering optimizations
-
-- Pit geometry reuses bounded per-room faces, vertices and clipping scratch buffers, invalidating projection/shader caches when needed.
-- Heart rendering caches up to 128 style recipes and merges adjacent identical-color rectangles.
-- Duplicate native top-down NPC/bomb draws are suppressed under the existing opaque FPS-view flag; entity physics and damage are unchanged. Native rendering returns when that flag is off, including transitions/intros.
-
-**No automatic room recording, archive writes, new diagnostic callbacks or experimental GPU triangle merging are included.** The mod's original manual F8 diagnostics remain as in the original base; this package does not turn them on. No saves, game executables, game assets, credentials or user profiles are shipped.
+240 pit-geometry cases and 300 heart-style raster comparisons passed. Pit allocations fell about 83% in the synthetic check; heart rectangle draws fell about 20%. These are isolated checks, not a guarantee of 144 FPS. See [PERFORMANCE.md](PERFORMANCE.md) for evidence and limitations. Both split patches reproduce the previously tested combined code byte for byte when applied together.
 
 ## Optional native High FPS
+
 
 The Lua changes above work without installing this component. `optional-highfps-repentogon.zip` contains a separately built MIT-licensed proxy DLL, its source/build scripts and a ready configuration.
 
@@ -45,18 +29,19 @@ The Lua changes above work without installing this component. `optional-highfps-
 - Build from `source/build.bat` with Visual Studio C++ x86 Build Tools. Upstream MIT license is included in the archive.
 - Rollback: restore backed-up native files and VSync value; if those files were absent before installation, remove only the two installed native files.
 
-## Evidence and limits
 
-See [PERFORMANCE.md](PERFORMANCE.md). Offline geometry/pixel/input regression checks passed against the packaged files. The individual changes were used in the local installed game; this freshly assembled distribution package still needs the author's own in-game compatibility/visual review. No claim of stable 144 FPS or a controlled combat benchmark is made.
+The native High FPS source and binary are credited to hunchcldev/isaac-highfps contributors under the MIT license included in the archive.
+
+## Base version and installation
+
+Requires the original **Isaac FPS Mod 0.5.132** and its REPENTOGON runtime/assets. This repository is a patch set, not a standalone mod.
+
+For the exact original base: close the game, back up the matching files, and replace only the `.lua` files from this repository. For a newer or locally modified base, merge the diff instead of overwriting files. Restore your backups to undo the changes. Do not delete saves.
+
+**Using both repositories:** both patches apply independently to the original 0.5.132 code, and both application orders have been checked. Apply `controls.patch` and `performance.patch` with `git apply --check` followed by `git apply` for each patch. Do not copy both replacement `main.lua` files on top of each other: the second would overwrite the first repository's changes.
+
+No automatic room recording, recording archives, new diagnostic callbacks, or experimental GPU triangle merging are included. The original mod's manual diagnostics are not enabled by these patches. No saves, game executables or game assets are shipped.
 
 ## Credits and licensing
 
-Original Isaac FPS Mod code and assets belong to their respective authors. Mouse method adapted from the user's local First Person v2.3 controls. Implementation and regression testing assisted by OpenAI Codex. Native High FPS belongs to hunchcldev/isaac-highfps contributors and is MIT-licensed.
-
-No blanket license or relicensing of the original Lua mod is granted here. This private repository is for author review and testing; retain original credits and resolve original licensing before any public redistribution.
-
-## По-русски
-
-Это общий пакет улучшений управления и отрисовки для **Isaac FPS Mod 0.5.132**. Закройте игру, сохраните шесть исходных Lua-файлов и замените их файлами из репозитория. Для другой версии переносите изменения из патча, не заменяйте файлы целиком. Сохранения удалять не нужно. Чувствительность из существующего сохранения сохраняется.
-
-Записи комнат здесь нет. Необязательный High FPS находится в отдельном архиве и подходит только указанной сборке REPENTOGON. Для возврата восстановите резервные копии файлов. Для скачивания всего пакета используйте **Code → Download ZIP**.
+Original Isaac FPS Mod code belongs to its respective authors. Implementation and regression testing assisted by OpenAI Codex. No blanket license or relicensing of the original Lua mod is granted here. This private author-review package retains original ownership; resolve original licensing before any public redistribution.

@@ -113,8 +113,8 @@ applySettings()
 settings.onChange(applySettings)
 mcm.register(settings,locale)
 local function resetMouse()
-    -- First Person v2.3: arm with a centred sample, then read displacement.
-    state.warmup=1
+    state.warmup=3
+    state.mouseReadyAt=Isaac.GetTime()+150
     state.mouseDown,state.mouseFrame=false,nil
     if ready then Isaac.CenterCursor() end
 end
@@ -587,24 +587,24 @@ local function mouseLook(sw, sh)
         release(locale.text("mouse_released"))
         return
     end
+    if Isaac.GetTime()<(state.mouseReadyAt or 0) then
+        Isaac.CenterCursor()
+        return
+    end
     -- Discard cursor-warp/loading samples; a moving sample is never calibration.
     if state.warmup > 0 then
         state.warmup = state.warmup - 1
         Isaac.CenterCursor()
         return
     end
-    -- Ported from firstperson_fps_local/fps_controls.lua (v2.3).
-    -- Transform two window positions in the SAME camera snapshot: subtracting
-    -- the origin cancels scrolling/shake, keeping the window-to-render scale.
-    -- A cached world mouse position can otherwise turn camera motion into input.
-    local raw=Input.GetMousePosition(false)
-    local position=Isaac.WorldToScreen(Isaac.ScreenToWorld(raw))
-    local origin=Isaac.WorldToScreen(Isaac.ScreenToWorld(Vector(0,0)))
-    local dx=position.X-origin.X-Isaac.GetScreenWidth()/2
-    local dy=position.Y-origin.Y-Isaac.GetScreenHeight()/2
-    -- Same rounding tolerance as First Person; retain small deliberate motions.
-    if math.abs(dx)<=0.15 then dx=0 end
-    if math.abs(dy)<=0.15 then dy=0 end
+    -- Project the native world mouse position into the same render coordinates
+    -- as the screen midpoint; moving samples never redefine that midpoint.
+    local position=Isaac.WorldToScreen(Input.GetMousePosition(true))-game.ScreenShakeOffset
+    local center=Vector(sw/2,sh/2)
+    local dx, dy = position.X - center.X, position.Y - center.Y
+    -- Native projection snaps pixels; absorb its centered one-pixel remainder.
+    if math.abs(dx)<=1 then dx=0 end
+    if math.abs(dy)<=1 then dy=0 end
     -- Large deltas can be fast mouse movement, not evidence of lost focus.
     -- Aiming down sights lowers the effective sensitivity; saved settings stay.
     -- 0.5.116 diagnostic (user: steady turning sometimes jumps): a delta
@@ -1621,10 +1621,18 @@ local function drawScene(p, sw, sh)
     stage('end')
 end
 
--- Stable FPS camera: native shake from shots/explosions is not reproduced
--- in the 3D view or its HUD. The native game effects remain untouched.
+-- 0.5.55: native screen shake for the FPS view. Game().ScreenShakeOffset is
+-- the offset the engine adds to every native render. The 3D scene turns by
+-- the matching angle and the 2D overlays (crosshair, gun, panels, minimap,
+-- pickup card, text) move by the offset. The aim angles are restored after
+-- the frame, so input, shots and the minimap state never keep the shake.
+local function readShake() return game.ScreenShakeOffset end
 local function screenShake()
-    return 0,0
+    local ok,offset=pcall(readShake)
+    if not ok or not offset then return 0,0 end
+    local x,y=tonumber(offset.X) or 0,tonumber(offset.Y) or 0
+    if x~=x or y~=y or math.abs(x)>64 or math.abs(y)>64 then return 0,0 end
+    return x,y
 end
 local function renderScene(p, sw, sh)
     shakeX,shakeY=screenShake()
@@ -1733,12 +1741,7 @@ mod:AddPriorityCallback(inputCallback, -1000, guard(function()
     state.hideNativeMass=viewActive() and not transitionActive() and not bossIntroActive() or false
     if state.hideNativeMass then hideRoomShadows() elseif not state.enabled then restoreRoomShadows() end
     if diagnostics.enabled then state.nativeSkips=0 end
-    -- Upper/forward thumb button; independent press edge, also with F6 held.
-    local sideDown=Input.IsMouseBtnPressed and Input.IsMouseBtnPressed(
-        Mouse and Mouse.MOUSE_BUTTON_5 or 4) or false
-    local sideEdge=sideDown and not state.fpsSideDown
-    state.fpsSideDown=sideDown
-    local toggle = edge(Keyboard.KEY_F6) or sideEdge
+    local toggle = edge(Keyboard.KEY_F6)
     local recenter = edge(Keyboard.KEY_F9)
     local lower = edge(Keyboard.KEY_LEFT_BRACKET)
     local higher = edge(Keyboard.KEY_RIGHT_BRACKET)
