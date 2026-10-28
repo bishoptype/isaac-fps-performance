@@ -1,0 +1,334 @@
+--- a/main.lua
++++ b/main.lua
+@@ -113,8 +113,8 @@
+ settings.onChange(applySettings)
+ mcm.register(settings,locale)
+ local function resetMouse()
+-    state.warmup=3
+-    state.mouseReadyAt=Isaac.GetTime()+150
++    -- First Person v2.3: arm with a centred sample, then read displacement.
++    state.warmup=1
+     state.mouseDown,state.mouseFrame=false,nil
+     if ready then Isaac.CenterCursor() end
+ end
+@@ -587,24 +587,24 @@
+         release(locale.text("mouse_released"))
+         return
+     end
+-    if Isaac.GetTime()<(state.mouseReadyAt or 0) then
+-        Isaac.CenterCursor()
+-        return
+-    end
+     -- Discard cursor-warp/loading samples; a moving sample is never calibration.
+     if state.warmup > 0 then
+         state.warmup = state.warmup - 1
+         Isaac.CenterCursor()
+         return
+     end
+-    -- Project the native world mouse position into the same render coordinates
+-    -- as the screen midpoint; moving samples never redefine that midpoint.
+-    local position=Isaac.WorldToScreen(Input.GetMousePosition(true))-game.ScreenShakeOffset
+-    local center=Vector(sw/2,sh/2)
+-    local dx, dy = position.X - center.X, position.Y - center.Y
+-    -- Native projection snaps pixels; absorb its centered one-pixel remainder.
+-    if math.abs(dx)<=1 then dx=0 end
+-    if math.abs(dy)<=1 then dy=0 end
++    -- Ported from firstperson_fps_local/fps_controls.lua (v2.3).
++    -- Transform two window positions in the SAME camera snapshot: subtracting
++    -- the origin cancels scrolling/shake, keeping the window-to-render scale.
++    -- A cached world mouse position can otherwise turn camera motion into input.
++    local raw=Input.GetMousePosition(false)
++    local position=Isaac.WorldToScreen(Isaac.ScreenToWorld(raw))
++    local origin=Isaac.WorldToScreen(Isaac.ScreenToWorld(Vector(0,0)))
++    local dx=position.X-origin.X-Isaac.GetScreenWidth()/2
++    local dy=position.Y-origin.Y-Isaac.GetScreenHeight()/2
++    -- Same rounding tolerance as First Person; retain small deliberate motions.
++    if math.abs(dx)<=0.15 then dx=0 end
++    if math.abs(dy)<=0.15 then dy=0 end
+     -- Large deltas can be fast mouse movement, not evidence of lost focus.
+     -- Aiming down sights lowers the effective sensitivity; saved settings stay.
+     -- 0.5.116 diagnostic (user: steady turning sometimes jumps): a delta
+@@ -1621,18 +1621,10 @@
+     stage('end')
+ end
+ 
+--- 0.5.55: native screen shake for the FPS view. Game().ScreenShakeOffset is
+--- the offset the engine adds to every native render. The 3D scene turns by
+--- the matching angle and the 2D overlays (crosshair, gun, panels, minimap,
+--- pickup card, text) move by the offset. The aim angles are restored after
+--- the frame, so input, shots and the minimap state never keep the shake.
+-local function readShake() return game.ScreenShakeOffset end
++-- Stable FPS camera: native shake from shots/explosions is not reproduced
++-- in the 3D view or its HUD. The native game effects remain untouched.
+ local function screenShake()
+-    local ok,offset=pcall(readShake)
+-    if not ok or not offset then return 0,0 end
+-    local x,y=tonumber(offset.X) or 0,tonumber(offset.Y) or 0
+-    if x~=x or y~=y or math.abs(x)>64 or math.abs(y)>64 then return 0,0 end
+-    return x,y
++    return 0,0
+ end
+ local function renderScene(p, sw, sh)
+     shakeX,shakeY=screenShake()
+@@ -1741,7 +1733,12 @@
+     state.hideNativeMass=viewActive() and not transitionActive() and not bossIntroActive() or false
+     if state.hideNativeMass then hideRoomShadows() elseif not state.enabled then restoreRoomShadows() end
+     if diagnostics.enabled then state.nativeSkips=0 end
+-    local toggle = edge(Keyboard.KEY_F6)
++    -- Upper/forward thumb button; independent press edge, also with F6 held.
++    local sideDown=Input.IsMouseBtnPressed and Input.IsMouseBtnPressed(
++        Mouse and Mouse.MOUSE_BUTTON_5 or 4) or false
++    local sideEdge=sideDown and not state.fpsSideDown
++    state.fpsSideDown=sideDown
++    local toggle = edge(Keyboard.KEY_F6) or sideEdge
+     local recenter = edge(Keyboard.KEY_F9)
+     local lower = edge(Keyboard.KEY_LEFT_BRACKET)
+     local higher = edge(Keyboard.KEY_RIGHT_BRACKET)
+@@ -2014,6 +2011,11 @@
+     end
+     if ModCallbacks.MC_PRE_TEAR_RENDER then mod:AddCallback(ModCallbacks.MC_PRE_TEAR_RENDER,skip) end
+     if ModCallbacks.MC_PRE_PROJECTILE_RENDER then mod:AddCallback(ModCallbacks.MC_PRE_PROJECTILE_RENDER,skip) end
++    -- NPCs/bombs were still drawn by the native top-down renderer underneath
++    -- the opaque FPS view. Our sprite renderer draws them independently; keep
++    -- their logic/collision and skip only this invisible duplicate draw.
++    if ModCallbacks.MC_PRE_NPC_RENDER then mod:AddCallback(ModCallbacks.MC_PRE_NPC_RENDER,skip) end
++    if ModCallbacks.MC_PRE_BOMB_RENDER then mod:AddCallback(ModCallbacks.MC_PRE_BOMB_RENDER,skip) end
+     if ModCallbacks.MC_PRE_EFFECT_RENDER then
+         mod:AddCallback(ModCallbacks.MC_PRE_EFFECT_RENDER,function(_,effect)
+             if effect.Variant==EffectVariant.BLOOD_SPLAT then return end
+--- a/fps_settings.lua
++++ b/fps_settings.lua
+@@ -5,7 +5,9 @@
+ local locale=include('fps_locale')
+ local json=require('json')
+ local M={}
+-local defaults={eye=32,fov=75,zoom=1,language='auto',sensitivity=.001,reloadKey='KEY_R',gpu=true,reflexSight=true}
++-- User's saved First Person sensitivity: 0.40 degrees per render pixel.
++-- This renderer stores angles in radians; retain its existing settings controls.
++local defaults={eye=32,fov=75,zoom=1,language='auto',sensitivity=math.rad(.40),reloadKey='KEY_R',gpu=true,reflexSight=true}
+ local values={eye=defaults.eye,fov=defaults.fov,zoom=defaults.zoom,language=defaults.language,sensitivity=defaults.sensitivity,
+     reloadKey=defaults.reloadKey,gpu=defaults.gpu,reflexSight=defaults.reflexSight}
+ local ROWS=7
+--- a/fps_guns.lua
++++ b/fps_guns.lua
+@@ -258,9 +258,13 @@
+     if runtime.controlsAttack() and chargeMode(holder) then
+         if mouseEdge then charge.holding,charge.frames=true,0 end
+         if charge.holding and leftDown==false then charge.holding,charge.release=false,true end
+-    elseif mouseEdge or (runtime.controlsAttack() and (M.autoFire(holder)
+-        or (leftDown and (soyMode(holder) or (runtime.currentDef() or {}).auto)))) then
++    -- Holding LMB repeats at the weapon's normal cooldown, for every gun form.
++    -- Charge weapons above retain their native hold/release behavior.
++    elseif mouseEdge or (runtime.controlsAttack() and (M.autoFire(holder) or leftDown)) then
+         runtime.click()
++    elseif runtime.controlsAttack() then
++        -- Do not leave a buffered repeat that fires after the button is released.
++        runtime.state().pending=nil
+     end
+     view.adsTarget=(rightDown and runtime.controlsAttack() and not runtime.reloadProgress()) and 1 or 0
+ end
+@@ -773,11 +777,9 @@
+         end
+         if extra>0 then burst.remaining,burst.next=extra,frame+M.BURST_GAP end
+         charge.mult,charge.kind,charge.ratio=nil,nil,nil
+-        local def=runtime.currentDef()
+-        local yaw=(math.random()*2-1)*def.kickYaw
+-        applyKick(def.kick,yaw)
++        -- Keep the gun's visual animation; firing never rotates the camera.
+         view.kick=1
+-        view.recoverLeft=view.recoverLeft+def.kick*def.recover
++        view.recoverLeft=0
+     end
+     if result~='fire' and burst.remaining>0 and frame>=burst.next and runtime.controlsAttack()
+         and not runtime.reloadProgress() then
+--- a/fps_weapons.lua
++++ b/fps_weapons.lua
+@@ -236,7 +236,11 @@
+         height=z
+     end
+     local speed=math.sqrt(velocity.X^2+velocity.Y^2)
+-    local vz=sp*speed-tear.FallingSpeed
++    -- Gun rounds use a straight aim ray. The native FallingSpeed getter may
++    -- retain a downward step even after the gun set it to zero (live log:
++    -- near-level pitch +0.5 deg produced vz=-0.20 instead of +0.17).
++    -- Only native tears inherit their original falling/lobbing component.
++    local vz=sp*speed-(gun and 0 or tear.FallingSpeed)
+     tear.Velocity=Vector(velocity.X*cp,velocity.Y*cp)
+     tear.Height,tear.FallingSpeed=-height,-vz
+     -- Preserve native FallingAcceleration (lobbed/charged tears still arc),
+--- a/fps_holes.lua
++++ b/fps_holes.lua
+@@ -112,6 +112,75 @@
+ end
+ 
+ local pitCache={}
++-- Pit clipping is rebuilt as the eye moves. Reuse its temporary polygons and
++-- final faces instead of allocating hundreds of vertex/projection tables each
++-- render. Other portal callers keep the original owned-result API.
++local pitFaces,pitFacePool={},{}
++local clipA,clipB,clipPoints={},{},{}
++local function pitPortalClip(poly,e,corners,mx,my)
++    local used=0
++    for plane=1,4 do
++        local a,b=corners[plane],corners[plane%4+1]
++        local ax,ay,az=a.x-e.x,a.y-e.y,a.z-e.z
++        local bx,by,bz=b.x-e.x,b.y-e.y,b.z-e.z
++        local nx,ny,nz=ay*bz-az*by,az*bx-ax*bz,ax*by-ay*bx
++        if (mx-e.x)*nx+(my-e.y)*ny-e.z*nz<0 then nx,ny,nz=-nx,-ny,-nz end
++        local out=plane%2==1 and clipA or clipB
++        local count,n=#poly,0
++        for i=1,count do
++            local p,q=poly[i],poly[i%count+1]
++            local dp=(p.x-e.x)*nx+(p.y-e.y)*ny+(p.z-e.z)*nz
++            local dq=(q.x-e.x)*nx+(q.y-e.y)*ny+(q.z-e.z)*nz
++            if dp>=0 then n=n+1;out[n]=p end
++            if (dp>=0)~=(dq>=0) then
++                local t=dp/(dp-dq)
++                used=used+1
++                local v=clipPoints[used]
++                if not v then v={};clipPoints[used]=v end
++                v.x,v.y,v.z=p.x+(q.x-p.x)*t,p.y+(q.y-p.y)*t,p.z+(q.z-p.z)*t
++                n=n+1;out[n]=v
++            end
++        end
++        for i=#out,n+1,-1 do out[i]=nil end
++        if n<3 then return nil end
++        poly=out
++    end
++    return poly
++end
++
++local function pitFace(index,points,color,normal,wx,wy)
++    local f=pitFacePool[index]
++    if not f then
++        f={vertices={},color={},center={},solid=true,convex=true,
++            projection={points={},clipped={},intersections={}}}
++        pitFacePool[index]=f
++    end
++    local cx,cy,cz=0,0,0
++    local vertices=f.vertices
++    for i,p in ipairs(points) do
++        local v=vertices[i]
++        if not v then v=vertex(0,0,0);vertices[i]=v end
++        v.x,v.y,v.z,v.u,v.v=p.x,p.y,p.z,0,0
++        cx,cy,cz=cx+p.x,cy+p.y,cz+p.z
++    end
++    for i=#vertices,#points+1,-1 do vertices[i]=nil end
++    local changed=false
++    for i=1,4 do
++        if f.color[i]~=color[i] then changed=true end
++        f.color[i]=color[i]
++    end
++    if changed then f.nativeColor=nil end
++    f.normal,f.worldX,f.worldY=normal,wx,wy
++    f.center.x,f.center.y,f.center.z=cx/#points,cy/#points,cz/#points
++    -- World vertices now change in place. Invalidate geometry-derived caches,
++    -- including flattened shader pieces that otherwise assume immutable meshes.
++    f.gpuSphere=nil
++    if f.projected then
++        f.projected.projectionEpoch=nil
++        f.projected.gpuPieces,f.projected.gpuPiecesReverse=nil,nil
++    end
++    return f
++end
+ 
+ -- Pit layout per map revision: connected pit cells merged into a few
+ -- rectangles (viewing openings and bottoms) and pit walls merged into long
+@@ -210,10 +279,12 @@
+     if c.map==map and c.revision==revision and c.ex==e.x and c.ey==e.y and c.ez==e.z then return c.faces end
+     if layoutCache.map~=map or layoutCache.revision~=revision then
+         layoutCache={map=map,revision=revision,layout=pitLayout(map)}
++        pitFaces,pitFacePool={},{}
+     end
+     local layout=layoutCache.layout
+     M.stats.pitCells,M.stats.pitRects,M.stats.pitWalls=layout.cells,#layout.rects,#layout.walls
+-    local faces={}
++    local faces=pitFaces
++    local faceCount=0
+     local depth=M.PIT_DEPTH
+     local rects,clips=layout.rects,0
+     local function emit(points,color,n,wx,wy)
+@@ -232,8 +303,11 @@
+             local r=rects[k]
+             if not M.PREFILTER or (bx1>=r.x0 and bx0<=r.x1 and by1>=r.y0 and by0<=r.y1) then
+                 clips=clips+1
+-                local visible=portalClip(points,e,r.corners,r.mx,r.my)
+-                if visible then faces[#faces+1]=face(visible,color,n,wx,wy) end
++                local visible=pitPortalClip(points,e,r.corners,r.mx,r.my)
++                if visible then
++                    faceCount=faceCount+1
++                    faces[faceCount]=pitFace(faceCount,visible,color,n,wx,wy)
++                end
+             end
+         end
+     end
+@@ -256,6 +330,7 @@
+             PIT_BOTTOM,up,(r.x0+r.x1)/2,(r.y0+r.y1)/2)
+     end
+     M.stats.pitClips=clips
++    for i=#faces,faceCount+1,-1 do faces[i]=nil end
+     pitCache={map=map,revision=revision,ex=e.x,ey=e.y,ez=e.z,faces=faces}
+     return faces
+ end
+@@ -380,6 +455,6 @@
+     return faces
+ end
+ 
+-function M.reset() pitCache={};plateCache={};layoutCache={} end
++function M.reset() pitCache={};plateCache={};layoutCache={};pitFaces={};pitFacePool={} end
+ 
+ return M
+--- a/fps_health.lua
++++ b/fps_health.lua
+@@ -223,7 +223,7 @@
+ local WHITE_SHELL={1,1,1}
+ local GHOST={1,1,1}
+ 
+-local function drawHeart(rect,hx,hy,cells,shell,heart,ghost)
++local function drawHeartRaw(rect,hx,hy,cells,shell,heart,ghost)
+     for _,run in ipairs(outlineRuns) do
+         rect(hx+run[2],hy+run[1],run[3]-run[2]+1,1,shell[1],shell[2],shell[3],1)
+     end
+@@ -253,6 +253,42 @@
+         end
+     end
+     if heart.eternal then rect(hx+HW-3,hy+1,2,2,1,1,1,1) end
++end
++
++-- Compile static heart styles once, joining adjacent equal-colour rectangles.
++-- This keeps every pixel/blink/gold/broken overlay while reducing native draw
++-- calls. Cache relative coordinates so low-health jiggle still moves freely.
++local heartRecipes,recipeCount={},0
++local function sameColor(a,b)
++    return a[5]==b[5] and a[6]==b[6] and a[7]==b[7] and a[8]==b[8]
++end
++local function drawHeart(rect,hx,hy,cells,shell,heart,ghost)
++    local key=table.concat({cells[1] or '',cells[2] or '',shell[1],shell[2],shell[3],
++        heart.shell or '',heart.gold and 1 or 0,heart.eternal and 1 or 0,
++        ghost and ghost[1] and 1 or 0,ghost and ghost[2] and 1 or 0},':')
++    local recipe=heartRecipes[key]
++    if not recipe then
++        local rows={}
++        drawHeartRaw(function(x,y,w,h,r,g,b,a)
++            local v={x,y,w,h,r,g,b,a}
++            local last=rows[#rows]
++            if last and sameColor(last,v) and last[2]==y and last[4]==h and last[1]+last[3]==x then
++                last[3]=last[3]+w
++            else rows[#rows+1]=v end
++        end,0,0,cells,shell,heart,ghost)
++        recipe={}
++        for _,v in ipairs(rows) do
++            local last=recipe[#recipe]
++            if last and sameColor(last,v) and last[1]==v[1] and last[3]==v[3] and last[2]+last[4]==v[2] then
++                last[4]=last[4]+v[4]
++            else recipe[#recipe+1]=v end
++        end
++        if recipeCount>=128 then heartRecipes={};recipeCount=0 end
++        heartRecipes[key]=recipe;recipeCount=recipeCount+1
++    end
++    for _,v in ipairs(recipe) do
++        rect(hx+v[1],hy+v[2],v[3],v[4],v[5],v[6],v[7],v[8])
++    end
+ end
+ 
+ M.layout={heartGap=2,perRow=10,rowGap=3,pad=4}

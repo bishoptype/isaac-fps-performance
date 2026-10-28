@@ -1,0 +1,15 @@
+--- a/src/dllmain.cpp
++++ b/src/dllmain.cpp
+@@ -756,8 +756,10 @@
+             if (left > 0.002) Sleep(DWORD(left * 1000.0) - 1);
+             now = Now();
+         }
+-        g_nextPresent += period;
+-        if (now - g_nextPresent > 0.25) g_nextPresent = now + period;
++        // Do not repay missed render slots with a burst above the configured cap.
++        // A slow render/load drops presentation slots; simulation cadence below
++        // keeps its own schedule and must not be changed here.
++        g_nextPresent = now + period;
+     }
+ 
+     const double now = Now();
